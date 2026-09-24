@@ -115,9 +115,13 @@ def backend_busy_ports(backend_domain, *args, **kwargs):
     return method(*args, **kwargs)
 
 
-def backend_usage_tracking(backend_domain) -> bool:
-    """`DeviceManager.usage_tracking`, false on a core-admin without it."""
-    return getattr(backend_domain.devices, "usage_tracking", False)
+def backend_usage_tracking(backend_domain, devclass) -> bool:
+    """`DeviceCollection.usage_tracking`, false on a core-admin without it."""
+    try:
+        collection = backend_domain.devices[devclass]
+    except (LookupError, TypeError):
+        return False
+    return getattr(collection, "usage_tracking", False)
 
 
 def find_attached_subdevice(device):
@@ -785,16 +789,16 @@ class USBDeviceExtension(qubes.ext.Extension):
 
         if device.attachment:
             raise qubes.exc.DeviceAlreadyAttached(
-                f"Device {device} already attached to {device.attachment}."
+                f"Device {device} is already attached to another VM."
             )
 
         # Check if any subdevice is already attached.
         attached_sub = find_attached_subdevice(device)
         if attached_sub is not None:
-            subdevice, frontend = attached_sub
+            subdevice, _frontend = attached_sub
             raise qubes.exc.DeviceUsed(
-                f"Device {device} cannot be attached: it's subdevice "
-                f"{subdevice} is attached to {frontend}."
+                f"Device {device} cannot be attached: its subdevice "
+                f"{subdevice} is attached to another VM."
             )
 
         if device.busy:
@@ -804,10 +808,15 @@ class USBDeviceExtension(qubes.ext.Extension):
                     "in use."
                 )
 
-        if not force and not backend_usage_tracking(device.backend_domain):
-            # The backend does not report local device usage, so the mount
-            # is torn away mid-write and whatever was not flushed can be lost.
-            subdevices = list(getattr(device, "subdevices", []))
+        if not force:
+            # Check the subdevices for which tracking is disabled.
+            subdevices = [
+                sub
+                for sub in getattr(device, "subdevices", [])
+                if not backend_usage_tracking(
+                    device.backend_domain, sub.port.devclass
+                )
+            ]
             if subdevices:
                 names = ", ".join(str(sub) for sub in subdevices)
                 raise qubes.exc.DeviceUsed(
